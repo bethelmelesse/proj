@@ -1,7 +1,9 @@
 """Decoder Layer and Stack for the Transformer model."""
+
 import torch.nn as nn
 from src.attention_utils.multihead_attention import MultiHeadAttention
 import torch
+
 
 class DecoderLayer(nn.Module):
     def __init__(self, d_model: int, d_ff: int, n_heads: int, dropout: float = 0.0):
@@ -27,12 +29,16 @@ class DecoderLayer(nn.Module):
         self.v_proj_encoder = nn.Linear(d_model, d_model)
 
         # Masked Self-Attention Layer
-        self.masked_self_attention = MultiHeadAttention(d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=True)
+        self.masked_self_attention = MultiHeadAttention(
+            d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=True
+        )
 
         self.layer_norm1 = nn.LayerNorm(d_model)
 
         # Cross-Attention Layer
-        self.cross_attention = MultiHeadAttention(d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=False)
+        self.cross_attention = MultiHeadAttention(
+            d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=False
+        )
 
         self.layer_norm2 = nn.LayerNorm(d_model)
 
@@ -41,7 +47,7 @@ class DecoderLayer(nn.Module):
             nn.Linear(d_model, d_ff),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model)
+            nn.Linear(d_ff, d_model),
         )
 
         self.layer_norm3 = nn.LayerNorm(d_model)
@@ -49,7 +55,13 @@ class DecoderLayer(nn.Module):
         # Dropout Layer
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, encoder_output: torch.Tensor, decoder_input: torch.Tensor, encoder_padding_mask: torch.Tensor, decoder_padding_mask: torch.Tensor):
+    def forward(
+        self,
+        encoder_output: torch.Tensor,
+        decoder_input: torch.Tensor,
+        encoder_padding_mask: torch.Tensor,
+        decoder_padding_mask: torch.Tensor,
+    ):
         """Forward pass for the decoder layer.
 
         Input shapes: batch_size, seq_len, d_dim
@@ -69,21 +81,35 @@ class DecoderLayer(nn.Module):
         decoder_value = self.v_proj(decoder_input)
 
         # Masked Self-Attention
-        masked_attention_output = self.masked_self_attention(query=decoder_query, key=decoder_key, value=decoder_value, attn_mask=decoder_padding_mask)
+        masked_attention_output = self.masked_self_attention(
+            query=decoder_query,
+            key=decoder_key,
+            value=decoder_value,
+            attn_mask=decoder_padding_mask,
+        )
 
         # Dropout, Residual, Layer Norm
         masked_attention_output = self.dropout(masked_attention_output)
-        masked_attention_output = self.layer_norm1((masked_attention_output + decoder_input))
+        masked_attention_output = self.layer_norm1(
+            (masked_attention_output + decoder_input)
+        )
 
         # Cross-Attention: Q from decoder, K/V from encoder
         decoder_cross_query = self.q_proj_cross(masked_attention_output)
         encoder_key = self.k_proj_encoder(encoder_output)
         encoder_value = self.v_proj_encoder(encoder_output)
-        cross_attention_output = self.cross_attention(query=decoder_cross_query, key=encoder_key, value=encoder_value, attn_mask=encoder_padding_mask)
+        cross_attention_output = self.cross_attention(
+            query=decoder_cross_query,
+            key=encoder_key,
+            value=encoder_value,
+            attn_mask=encoder_padding_mask,
+        )
 
         # Dropout, Residual, Layer Norm
         cross_attention_output = self.dropout(cross_attention_output)
-        cross_attention_output = self.layer_norm2((cross_attention_output + masked_attention_output))
+        cross_attention_output = self.layer_norm2(
+            (cross_attention_output + masked_attention_output)
+        )
 
         # Feed Forward
         ff_output = self.feed_forward(cross_attention_output)
@@ -96,7 +122,9 @@ class DecoderLayer(nn.Module):
 
 
 class DecoderStack(nn.Module):
-    def __init__(self, d_model: int, d_ff: int, n_heads: int, n_layers: int, dropout: float = 0.0):
+    def __init__(
+        self, d_model: int, d_ff: int, n_heads: int, n_layers: int, dropout: float = 0.0
+    ):
         """Initialize the decoder stack.
 
         Args:
@@ -107,9 +135,17 @@ class DecoderStack(nn.Module):
             dropout (float, optional): Dropout rate. Defaults to 0.0.
         """
         super().__init__()
-        self.layers = nn.ModuleList([DecoderLayer(d_model, d_ff, n_heads, dropout) for _ in range(n_layers)])
+        self.layers = nn.ModuleList(
+            [DecoderLayer(d_model, d_ff, n_heads, dropout) for _ in range(n_layers)]
+        )
 
-    def forward(self, encoder_output: torch.Tensor, decoder_input: torch.Tensor, encoder_padding_mask: torch.Tensor, decoder_padding_mask: torch.Tensor):
+    def forward(
+        self,
+        encoder_output: torch.Tensor,
+        decoder_input: torch.Tensor,
+        encoder_padding_mask: torch.Tensor,
+        decoder_padding_mask: torch.Tensor,
+    ):
         """Forward pass for the decoder stack.
 
         Input shapes: batch_size, seq_len, d_dim
@@ -124,7 +160,12 @@ class DecoderStack(nn.Module):
             torch.Tensor: Output tensor from the decoder layer.
         """
         for layer in self.layers:
-            decoder_input = layer(encoder_output=encoder_output, decoder_input=decoder_input, encoder_padding_mask=encoder_padding_mask, decoder_padding_mask=decoder_padding_mask)
+            decoder_input = layer(
+                encoder_output=encoder_output,
+                decoder_input=decoder_input,
+                encoder_padding_mask=encoder_padding_mask,
+                decoder_padding_mask=decoder_padding_mask,
+            )
 
         return decoder_input
 
@@ -135,8 +176,15 @@ if __name__ == "__main__":
     decoder_input = torch.randn(batch_size, seq_len, d_dim)
     decoder_padding_mask = None
     encoder_padding_mask = None
-    
-    decoder_stack = DecoderStack(d_model=d_dim, d_ff=d_dim, n_heads=1, n_layers=1, dropout=0.0)
-    decoder_output = decoder_stack(encoder_output=encoder_output, decoder_input=decoder_input, encoder_padding_mask=encoder_padding_mask, decoder_padding_mask=decoder_padding_mask)
+
+    decoder_stack = DecoderStack(
+        d_model=d_dim, d_ff=d_dim, n_heads=1, n_layers=1, dropout=0.0
+    )
+    decoder_output = decoder_stack(
+        encoder_output=encoder_output,
+        decoder_input=decoder_input,
+        encoder_padding_mask=encoder_padding_mask,
+        decoder_padding_mask=decoder_padding_mask,
+    )
     print(decoder_output)
     print(decoder_output.shape)

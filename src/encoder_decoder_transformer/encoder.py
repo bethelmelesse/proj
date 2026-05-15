@@ -1,7 +1,9 @@
 """Encoder Layer and Stack for the Transformer model."""
+
 import torch
 import torch.nn as nn
 from src.attention_utils.multihead_attention import MultiHeadAttention
+
 
 class EncoderLayer(nn.Module):
     def __init__(self, d_model: int, d_ff: int, n_heads: int, dropout: float = 0.0):
@@ -20,7 +22,9 @@ class EncoderLayer(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
 
         # Multi-Head attention Layer
-        self.self_attention = MultiHeadAttention(d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=False)
+        self.self_attention = MultiHeadAttention(
+            d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=False
+        )
 
         self.layer_norm1 = nn.LayerNorm(d_model)
 
@@ -29,14 +33,13 @@ class EncoderLayer(nn.Module):
             nn.Linear(d_model, d_ff),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model)
+            nn.Linear(d_ff, d_model),
         )
 
         self.layer_norm2 = nn.LayerNorm(d_model)
 
         # Dropout Layer
         self.dropout = nn.Dropout(dropout)
-
 
     def forward(self, encoder_input, encoder_padding_mask):
         """Forward pass for the encoder layer.
@@ -56,7 +59,9 @@ class EncoderLayer(nn.Module):
         value = self.v_proj(encoder_input)
 
         # Multi-Head attention
-        attention_output = self.self_attention(query, key, value, attn_mask=encoder_padding_mask)
+        attention_output = self.self_attention(
+            query, key, value, attn_mask=encoder_padding_mask
+        )
 
         # Dropout, Residual, Layer Norm
         attention_output = self.dropout(attention_output)
@@ -73,7 +78,9 @@ class EncoderLayer(nn.Module):
 
 
 class EncoderStack(nn.Module):
-    def __init__(self, d_model: int, d_ff: int, n_heads: int, n_layers: int, dropout: float = 0.0):
+    def __init__(
+        self, d_model: int, d_ff: int, n_heads: int, n_layers: int, dropout: float = 0.0
+    ):
         """Initialize the encoder stack.
 
         Args:
@@ -84,7 +91,9 @@ class EncoderStack(nn.Module):
             dropout (float, optional): Dropout rate. Defaults to 0.0.
         """
         super().__init__()
-        self.layers = nn.ModuleList([EncoderLayer(d_model, d_ff, n_heads, dropout) for _ in range(n_layers)])
+        self.layers = nn.ModuleList(
+            [EncoderLayer(d_model, d_ff, n_heads, dropout) for _ in range(n_layers)]
+        )
 
     def forward(self, encoder_input, encoder_padding_mask):
         """Forward pass for the encoder stack.
@@ -108,8 +117,10 @@ if __name__ == "__main__":
     batch_size, seq_len, d_dim = 1, 3, 5
     encoder_input = torch.randn(batch_size, seq_len, d_dim)
     encoder_padding_mask = None
-    
-    encoder_stack = EncoderStack(d_model=d_dim, d_ff=d_dim, n_heads=1, n_layers=1, dropout=0.0)
+
+    encoder_stack = EncoderStack(
+        d_model=d_dim, d_ff=d_dim, n_heads=1, n_layers=1, dropout=0.0
+    )
     encoder_output = encoder_stack(encoder_input, encoder_padding_mask)
     print(encoder_output)
     print(encoder_output.shape)
