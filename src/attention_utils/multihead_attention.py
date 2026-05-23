@@ -34,7 +34,7 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = d_model // n_heads
 
         # Output Projection Layer
-        self.output_proj = nn.Linear(d_model, d_model)
+        self.output_proj = nn.Linear(d_model, d_model, bias=False)
 
     def forward(self, query, key, value, attn_mask: torch.Tensor | None = None):
         """Scaled Dot Product Attention.
