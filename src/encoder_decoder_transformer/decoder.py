@@ -18,15 +18,15 @@ class DecoderLayer(nn.Module):
         super().__init__()
 
         # Projection Layers for decoder input
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
 
         # Projection Layers for cross-attention
         # Q comes from the decoder side; K/V come from the encoder output.
-        self.q_proj_cross = nn.Linear(d_model, d_model)
-        self.k_proj_encoder = nn.Linear(d_model, d_model)
-        self.v_proj_encoder = nn.Linear(d_model, d_model)
+        self.q_proj_cross = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj_encoder = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj_encoder = nn.Linear(d_model, d_model, bias=False)
 
         # Masked Self-Attention Layer
         self.masked_self_attention = MultiHeadAttention(

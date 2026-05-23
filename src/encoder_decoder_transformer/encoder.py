@@ -17,9 +17,9 @@ class EncoderLayer(nn.Module):
         """
         super().__init__()
         # Projection Layers for query, key, value
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
 
         # Multi-Head attention Layer
         self.self_attention = MultiHeadAttention(

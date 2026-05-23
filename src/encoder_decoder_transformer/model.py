@@ -29,10 +29,7 @@ class EncoderDecoderTransformer(nn.Module):
         """
         super().__init__()
         # Positional Embedding Layers
-        self.encoder_embed_layer = PositionalEncoder(
-            vocab_size, d_model, max_seq_len, dropout
-        )
-        self.decoder_embed_layer = PositionalEncoder(
+        self.embedding_layer = PositionalEncoder(
             vocab_size, d_model, max_seq_len, dropout
         )
 
@@ -41,7 +38,8 @@ class EncoderDecoderTransformer(nn.Module):
         self.decoder = DecoderStack(d_model, d_ff, n_heads, n_layers, dropout)
 
         # Final output projection layer
-        self.output_proj = nn.Linear(d_model, vocab_size)
+        self.output_proj = nn.Linear(d_model, vocab_size, bias=False)
+        self.output_proj.weight = self.embedding_layer.token_embedder.weight
 
     def forward(
         self,
@@ -78,8 +76,8 @@ class EncoderDecoderTransformer(nn.Module):
             target_tokens[target_tokens == -100] = 0
 
         # Embed the source and target tokens
-        source_embed = self.encoder_embed_layer(source_tokens)
-        target_embed = self.decoder_embed_layer(target_tokens)
+        source_embed = self.embedding_layer(source_tokens)
+        target_embed = self.embedding_layer(target_tokens)
 
         # Encode the source tokens
         encoder_output = self.encoder(
@@ -100,15 +98,14 @@ class EncoderDecoderTransformer(nn.Module):
 
 
 if __name__ == "__main__":
-    vocab_size, d_model, d_ff, n_heads, n_layers, max_seq_len, dropout = (
-        10,
-        5,
-        10,
-        1,
-        2,
-        12,
-        0.1,
-    )
+    vocab_size = 37000
+    d_model = 512
+    d_ff = 2048
+    n_heads = 8
+    n_layers = 6
+    max_seq_len = 512
+    dropout = 0.1
+
     # create a encoder decoder transformer
     model = EncoderDecoderTransformer(
         vocab_size=vocab_size,
@@ -120,6 +117,10 @@ if __name__ == "__main__":
         dropout=dropout,
     )
 
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Params: {total:,} total ({trainable:,} trainable)")
+
     # create a test tensor
     source_tokens = torch.randint(0, vocab_size, (1, max_seq_len))
     target_tokens = torch.randint(0, vocab_size, (1, max_seq_len))
@@ -129,7 +130,4 @@ if __name__ == "__main__":
     print(output.shape)
     print(output)
 
-    total = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"  Params: {total:,} total ({trainable:,} trainable)")
     print()
