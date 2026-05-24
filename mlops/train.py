@@ -1,14 +1,17 @@
 import copy
+import os
+from typing import Literal
 
+import mlflow
 import torch
 from datasets import Dataset, DatasetDict
+from torch import optim, nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 from src.data_utils.tokenizer_utils import Tokenizer
 from src.gpt.model import DecoderOnlyTransformer
-from torch import optim, nn
-from tqdm import tqdm
 from src.utils.utils import print_header
-import mlflow
 
 
 def load_dataset(data_args: dict, seed: int = 42) -> DatasetDict:
@@ -45,6 +48,8 @@ def load_dataset(data_args: dict, seed: int = 42) -> DatasetDict:
 def tokenize_dataset(
     dataset: DatasetDict, tokenizer: Tokenizer
 ) -> tuple[Dataset, Dataset, Dataset]:
+    """Tokenize each split, returning torch-formatted HF Datasets that
+    expose `input_ids` and `attention_mask` per row."""
     print_header(text="Tokenizing splits (Train/Valid/Test)")
     train_set = tokenizer(dataset["train"])
     valid_set = tokenizer(dataset["valid"])
@@ -55,6 +60,14 @@ def tokenize_dataset(
 
 
 def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
+    """Stack tokenized rows into a batch with teacher-forcing labels.
+
+    Returns:
+        input_tokens:    [B, L]   full token sequence fed to the model.
+        attention_mask:  [B, L]   1 for real tokens, 0 for pad.
+        labels:          [B, L-1] next-token targets (input shifted left
+            by one); pairs with `logits[:, :-1, :]` in the loss.
+    """
     input_ids = torch.stack([row["input_ids"] for row in batch])
     attention_mask = torch.stack([row["attention_mask"] for row in batch])
 
@@ -71,6 +84,8 @@ def create_dataloader(
     test_set: Dataset,
     batch_size: int,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
+    """Wrap each split in a DataLoader with the teacher-forcing
+    `collate_fn`. Train is shuffled; valid/test are not."""
     print_header(text="Building DataLoaders (Train/Valid/Test)")
     train_loader = DataLoader(
         train_set, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
@@ -98,6 +113,7 @@ def create_dataloader(
 
 
 def initialize_model(tokenizer: Tokenizer, model_args: dict) -> DecoderOnlyTransformer:
+    """Build the decoder-only transformer and report its parameter count."""
     print_header(text="Initializing model")
     model = DecoderOnlyTransformer(
         vocab_size=tokenizer.get_vocab_size(),
@@ -120,6 +136,7 @@ def initialize_model(tokenizer: Tokenizer, model_args: dict) -> DecoderOnlyTrans
 
 
 def initialize_optimizer(model: nn.Module, optim_args: dict) -> optim.AdamW:
+    """Build an AdamW optimizer over `model.parameters()` from `optim_args`."""
     print_header(text="Initializing optimizer")
     optimizer = optim.AdamW(
         model.parameters(),
@@ -138,6 +155,9 @@ def initialize_optimizer(model: nn.Module, optim_args: dict) -> optim.AdamW:
 def initialize_criterion(
     tokenizer: Tokenizer, criterion_args: dict
 ) -> nn.CrossEntropyLoss:
+    """Build CrossEntropyLoss with `ignore_index=pad_id` so padded
+    positions are excluded from the loss, and label smoothing from
+    `criterion_args`."""
     print_header(text="Initializing criterion")
     # pad/eos collision check — `ignore_index=pad_id` would also mask EOS
     # tokens in targets if the two share an id (GPT-2-style tokenizers).
@@ -164,16 +184,36 @@ def train_epoch(
     epoch: int,
     loader: DataLoader,
     model: nn.Module,
-    optimizer: optim.Optimizer,
+    optimizer: optim.Optimizer | None,
     criterion: nn.Module,
     device: str,
-) -> float:
-    model.train()
+    global_step: int | None,
+    mode: Literal["Train", "Val", "Init", "Test"],
+) -> tuple[float, int | None]:
+    """Run one pass over `loader` in the given mode.
+
+    Backward + optimizer step happen only when mode == "Train".
+    Step-level metrics are logged for "Train" and "Val"; "Init" and
+    "Test" log only the epoch-level loss. `global_step` advances only
+    in "Train" mode.
+
+    Args:
+        optimizer:   Required when mode=="Train"; pass None otherwise.
+        global_step: Training-step counter. Pass None for "Init"/"Test".
+
+    Returns:
+        `(avg_epoch_loss, updated_global_step)`. The counter is returned
+        unchanged for non-"Train" modes.
+    """
+    model.train() if mode == "Train" else model.eval()
+
     epoch_loss = 0.0
     num_batches = 0
-    for batch in tqdm(loader, desc=f"Epoch {epoch} [Train]"):
-        optimizer.zero_grad()
-        # Forward pass
+
+    for batch in tqdm(loader, desc=f"Epoch {epoch} [{mode}]"):
+        if mode == "Train":
+            optimizer.zero_grad()
+
         logits = model(
             input_tokens=batch["input_tokens"].to(device),
             attention_mask=batch["attention_mask"].to(device),
@@ -187,53 +227,31 @@ def train_epoch(
         logits_shifted = logits_shifted.reshape(batch_size * seq_len, vocab_size)
         labels = labels.reshape(batch_size * seq_len)
 
-        # Calculate loss
         loss = criterion(logits_shifted, labels)
         epoch_loss += loss.item()
 
-        # Backward pass
-        loss.backward()
-        optimizer.step()
+        if mode == "Train":
+            loss.backward()
+            optimizer.step()
+
+        # Step-level logging: per-batch loss for Train/Val; LR + step
+        # increment only for Train so the x-axis tracks gradient updates.
+        if mode in ("Train", "Val"):
+            mlflow.log_metrics(
+                {f"step_level/{mode}_loss": loss.item()}, step=global_step
+            )
+        if mode == "Train":
+            current_lr = optimizer.param_groups[0]["lr"]
+            mlflow.log_metrics({"step_level/lr": current_lr}, step=global_step)
+            global_step += 1
 
         num_batches += 1
 
     avg_epoch_loss = epoch_loss / num_batches
-    return avg_epoch_loss
 
-
-def eval_epoch(
-    epoch: int,
-    loader: DataLoader,
-    model: nn.Module,
-    criterion: nn.Module,
-    device: str,
-    mode: str,
-) -> float:
-    model.eval()
-    epoch_loss = 0.0
-    num_batches = 0
-    with torch.no_grad():
-        for batch in tqdm(loader, desc=f"Epoch {epoch} [{mode}]"):
-            # Forward pass
-            logits = model(
-                input_tokens=batch["input_tokens"].to(device),
-                attention_mask=batch["attention_mask"].to(device),
-            )
-            labels = batch["labels"].to(device)
-
-            logits_shifted = logits[:, :-1, :]
-            batch_size, seq_len, vocab_size = logits_shifted.shape
-            logits_shifted = logits_shifted.reshape(batch_size * seq_len, vocab_size)
-            labels = labels.reshape(batch_size * seq_len)
-
-            # Calculate loss
-            loss = criterion(logits_shifted, labels)
-            epoch_loss += loss.item()
-
-            num_batches += 1
-
-    avg_epoch_loss = epoch_loss / num_batches
-    return avg_epoch_loss
+    print(f"{mode} Loss: {avg_epoch_loss:.4f}")
+    mlflow.log_metrics({f"epoch_level/{mode}_loss": avg_epoch_loss}, step=epoch)
+    return avg_epoch_loss, global_step
 
 
 def train(
@@ -246,6 +264,7 @@ def train(
     training_args: dict,
     mlflow_args: dict,
 ) -> None:
+    """End-to-end training entry point."""
     dataset = load_dataset(data_args)
     tokenizer = Tokenizer(
         tokenizer_path=tokenizer_args["tokenizer_path"],
@@ -267,7 +286,11 @@ def train(
 
     epochs = training_args["epochs"]
     device = training_args["device"]
+    checkpoint_dir = training_args["checkpoint_dir"]
     model.to(device)
+
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Training with MLflow logging
     mlflow.set_tracking_uri(mlflow_args["tracker_url"])
@@ -275,7 +298,6 @@ def train(
     with mlflow.start_run(run_name=mlflow_args["run_name"]):
         # Enable system metrics logging
         mlflow.enable_system_metrics_logging()
-
         mlflow.log_params(
             {
                 "epochs": training_args["epochs"],
@@ -288,52 +310,68 @@ def train(
         best_val_loss = float("inf")
         best_epoch = 0
         epoch_one_loss = None
+        global_step = 0
 
         # Initial Validation
-        print_header(text="Initital Validation")
-        init_loss = eval_epoch(
-            epoch=0,
-            loader=valid_loader,
-            model=model,
-            criterion=criterion,
-            device=device,
-            mode="Init",
-        )
-        print(f"Init Loss: {init_loss:.4f}")
-        mlflow.log_metrics({"init_loss": init_loss}, step=best_epoch)
+        print_header(text="Initial Validation")
+        with torch.no_grad():
+            init_loss, _ = train_epoch(
+                epoch=0,
+                loader=valid_loader,
+                model=model,
+                criterion=criterion,
+                device=device,
+                mode="Init",
+                global_step=None,
+                optimizer=None,
+            )
 
         print_header(text="Started Training")
         for epoch in range(1, epochs + 1):
             # Training
-            train_loss = train_epoch(
+            train_loss, global_step = train_epoch(
                 epoch=epoch,
                 loader=train_loader,
                 model=model,
                 optimizer=optimizer,
                 criterion=criterion,
                 device=device,
+                global_step=global_step,
+                mode="Train",
             )
             if epoch == 1:
                 epoch_one_loss = train_loss
 
             # Validation
-            val_loss = eval_epoch(
-                epoch=epoch,
-                loader=valid_loader,
-                model=model,
-                criterion=criterion,
-                device=device,
-                mode="Val",
-            )
-            print(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
-            mlflow.log_metrics(
-                {"train_loss": train_loss, "val_loss": val_loss}, step=epoch
-            )
+            with torch.no_grad():
+                val_loss, _ = train_epoch(
+                    epoch=epoch,
+                    loader=valid_loader,
+                    model=model,
+                    criterion=criterion,
+                    device=device,
+                    mode="Val",
+                    global_step=global_step,
+                    optimizer=None,
+                )
 
             if val_loss <= best_val_loss:
                 best_state = copy.deepcopy(model.state_dict())
                 best_epoch = epoch
                 best_val_loss = val_loss
+
+                if checkpoint_dir:
+                    ckpt_path = os.path.join(checkpoint_dir, "best.pt")
+                    torch.save(
+                        {
+                            "epoch": best_epoch,
+                            "model_state_dict": best_state,
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "val_loss": best_val_loss,
+                        },
+                        ckpt_path,
+                    )
+                    print(f"Saved best checkpoint to {ckpt_path}")
 
         print(
             f"\nInitial Loss [epoch 0]={init_loss:.4f}"
@@ -341,22 +379,21 @@ def train(
             f"\nFinal Loss [epoch {epoch}]={val_loss:.4f}"
             f"\nBest Loss [epoch {best_epoch}]={best_val_loss:.4f}"
         )
-        # Log final model
-        mlflow.pytorch.log_model(model, name="model")
 
         # Final test — restore the best validation checkpoint first.
         model.load_state_dict(best_state)
         print_header(text="Final Validation")
-        test_loss = eval_epoch(
-            epoch=best_epoch,
-            loader=test_loader,
-            model=model,
-            criterion=criterion,
-            device=device,
-            mode="Test",
-        )
-        print(f"Test Loss: {test_loss:.4f}")
-        mlflow.log_metrics({"test_loss": test_loss}, step=best_epoch)
+        with torch.no_grad():
+            test_loss, _ = train_epoch(
+                epoch=best_epoch,
+                loader=test_loader,
+                model=model,
+                criterion=criterion,
+                device=device,
+                mode="Test",
+                global_step=None,
+                optimizer=None,
+            )
 
 
 if __name__ == "__main__":
@@ -388,11 +425,11 @@ if __name__ == "__main__":
 
     criterion_args = {"label_smoothing": 0.1}
 
-    training_args = {"epochs": 10, "device": "cpu"}
+    training_args = {"epochs": 10, "device": "cpu", "checkpoint_dir": None}
 
     mlflow_args = {
         "experiment_name": "GPT (Decoder Only)",
-        "run_name": "Test run",
+        "run_name": "Test run - step level (one train loop)",
         "tracker_url": "http://localhost:5000",
     }
 
