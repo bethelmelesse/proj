@@ -12,7 +12,7 @@ def generate_next(input, model):
     return next_token
 
 
-def generate(sequence, model_args, tokenizer_args, max_new_tokens):
+def generate(input, model_args, tokenizer_args, max_new_tokens):
     # Tokenizer
     tokenizer_path = tokenizer_args["tokenizer_path"]
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
@@ -28,20 +28,38 @@ def generate(sequence, model_args, tokenizer_args, max_new_tokens):
     )
 
     model.eval()
-    tokenized_input = tokenizer(sequence, return_tensors="pt", add_special_tokens=False)
-    input = tokenized_input["input_ids"]
+    tokenized_input = tokenizer(
+        input,
+        return_tensors="pt",
+        add_special_tokens=False,
+        padding=True,
+        padding_side="left",
+    )
+    input_ids = tokenized_input["input_ids"]
 
     eos_token_id = tokenizer.eos_token_id
 
+    pad_id = (
+        tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos_token_id
+    )
+    finished = torch.zeros(input_ids.size(0), dtype=torch.bool)
+
+    output = input_ids
     for _ in range(max_new_tokens):
-        next_token = generate_next(input=input, model=model)
-        input = torch.cat((input, next_token), dim=-1)
-        if eos_token_id is not None and next_token.item() == eos_token_id:
+        next_token = generate_next(input=output, model=model)  # (B, 1)
+        next_token = next_token.masked_fill(finished.unsqueeze(1), pad_id)
+        output = torch.cat((output, next_token), dim=-1)
+        finished |= next_token.squeeze(1) == eos_token_id
+        if finished.all():
             break
 
-    decoded_seq = tokenizer.decode(input[0])
-    print(f"Starting sequence: {sequence}")
-    print(f"Final Prediction: {decoded_seq}")
+    decoded_seq = tokenizer.batch_decode(output, skip_special_tokens=True)
+
+    inputs = input if isinstance(input, list) else [input]
+    for src, pred in zip(inputs, decoded_seq):
+        print(f"Starting sequence: {src}")
+        print(f"Final Prediction: {pred}\n")
+
     return decoded_seq
 
 
@@ -57,10 +75,16 @@ if __name__ == "__main__":
         "dropout": 0.1,
     }
 
-    sequence = "Hello my name is"
+    seq_list = [
+        "Hello, my name",
+        "The president of US",
+        "Once upon a time there was a frog",
+        "The brown",
+        "Bethel",
+    ]
 
     generate(
-        sequence=sequence,
+        input=seq_list,
         model_args=model_args,
         tokenizer_args=tokenizer_args,
         max_new_tokens=4,
