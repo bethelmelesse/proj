@@ -9,9 +9,10 @@ from torch import optim, nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.gpt.model import DecoderOnlyTransformer
+from src.gpt_with_kv_caching.model import DecoderOnlyTransformer
 from src.utils.utils import print_header
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from torch.optim.lr_scheduler import ExponentialLR
 
 
 def load_dataset(data_args: dict[str, Any], seed: int = 42) -> DatasetDict:
@@ -98,7 +99,7 @@ def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
     attention_mask = torch.stack([row["attention_mask"] for row in batch])
 
     return {
-        "input_tokens": input_ids,
+        "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": input_ids[:, 1:],
     }
@@ -241,7 +242,7 @@ def train_epoch(
             optimizer.zero_grad()
 
         logits = model(
-            input_tokens=batch["input_tokens"].to(device),
+            input_ids=batch["input_ids"].to(device),
             attention_mask=batch["attention_mask"].to(device),
         )
         labels = batch["labels"].to(device)
@@ -287,6 +288,7 @@ def train(
     model_args: dict,
     optim_args: dict,
     criterion_args: dict,
+    scheduler_args: dict,
     training_args: dict,
     mlflow_args: dict,
 ) -> None:
@@ -306,6 +308,8 @@ def train(
     model = build_model(tokenizer=tokenizer, model_args=model_args)
     optimizer = initialize_optimizer(model=model, optim_args=optim_args)
     criterion = initialize_criterion(tokenizer=tokenizer, criterion_args=criterion_args)
+
+    scheduler = ExponentialLR(optimizer, gamma=scheduler_args["gamma"])
 
     epochs = training_args["epochs"]
     device = training_args["device"]
@@ -378,6 +382,8 @@ def train(
                     optimizer=None,
                 )
 
+            scheduler.step()
+
             if val_loss <= best_val_loss:
                 best_state = copy.deepcopy(model.state_dict())
                 best_epoch = epoch
@@ -448,11 +454,14 @@ if __name__ == "__main__":
 
     criterion_args = {"label_smoothing": 0.1}
 
+    exp_scheduler_args = {"gamma": 0.9}
+    scheduler_args = {**exp_scheduler_args}
+
     training_args = {"epochs": 10, "device": "cpu", "checkpoint_dir": None}
 
     mlflow_args = {
         "experiment_name": "GPT (Decoder Only)",
-        "run_name": "Test run - step level (one train loop)",
+        "run_name": "EXP: lr 1e-4",
         "tracker_url": "http://localhost:5000",
     }
 
@@ -463,6 +472,7 @@ if __name__ == "__main__":
         model_args=model_args,
         optim_args=optim_args,
         criterion_args=criterion_args,
+        scheduler_args=scheduler_args,
         training_args=training_args,
         mlflow_args=mlflow_args,
     )
