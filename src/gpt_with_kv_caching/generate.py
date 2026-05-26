@@ -57,6 +57,7 @@ def generate(input, model_args, tokenizer_args, max_new_tokens, device):
     ones_col = torch.ones((input_ids.size(0), 1), dtype=attention_mask.dtype)
 
     use_kv_cache = model_args["use_kv_cache"]
+    finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=device)
 
     if use_kv_cache:
         # Prefill: full prompt seeds the cache and produces the first new token.
@@ -67,10 +68,13 @@ def generate(input, model_args, tokenizer_args, max_new_tokens, device):
             kv_cache=None,
             use_kv_cache=True,
         )
+        finished = torch.logical_or(finished, next_token.squeeze(-1) == eos_token_id)
         attention_mask = torch.cat([attention_mask, ones_col], dim=-1)
         output = torch.cat((input_ids, next_token), dim=-1)
         # Decode: feed only the new token each step.
         for _ in range(max_new_tokens - 1):
+            if finished.all():
+                break
             next_token, kv_cache = generate_next(
                 input_ids=next_token,
                 attention_mask=attention_mask,
@@ -78,18 +82,28 @@ def generate(input, model_args, tokenizer_args, max_new_tokens, device):
                 kv_cache=kv_cache,
                 use_kv_cache=True,
             )
+            next_token[finished] = pad_id
+            finished = torch.logical_or(
+                finished, next_token.squeeze(-1) == eos_token_id
+            )
             output = torch.cat((output, next_token), dim=-1)
             attention_mask = torch.cat([attention_mask, ones_col], dim=-1)
     else:
         # No cache: re-run the full growing sequence each step.
         output = input_ids
         for _ in range(max_new_tokens):
+            if finished.all():
+                break
             next_token, _ = generate_next(
                 input_ids=output,
                 attention_mask=attention_mask,
                 model=model,
                 kv_cache=None,
                 use_kv_cache=False,
+            )
+            next_token[finished] = pad_id
+            finished = torch.logical_or(
+                finished, next_token.squeeze(-1) == eos_token_id
             )
             output = torch.cat((output, next_token), dim=-1)
             attention_mask = torch.cat([attention_mask, ones_col], dim=-1)
@@ -113,15 +127,15 @@ if __name__ == "__main__":
         "n_layers": 2,
         "max_seq_len": 512,
         "dropout": 0.1,
-        "use_kv_cache": False,
+        "use_kv_cache": True,
     }
 
     seq_list = [
         "Hello, my name",
-        "The president of US",
+        # "The president of US",
         "Once upon a time there was a frog",
-        "The brown",
-        "Bethel",
+        # "The brown",
+        # "Bethel",
     ]
 
     generate(
