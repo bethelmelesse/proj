@@ -1,11 +1,15 @@
 """Decoder Layer and Stack for the Transformer model."""
 
-import torch.nn as nn
-from src.attention_utils.multihead_attention import MultiHeadAttention
 import torch
+import torch.nn as nn
+
+from src.attention_utils.multihead_attention import MultiHeadAttention
 
 
 class DecoderLayer(nn.Module):
+    """A single Transformer decoder block (masked self-attention, cross-attention,
+    feed-forward)."""
+
     def __init__(self, d_model: int, d_ff: int, n_heads: int, dropout: float = 0.0):
         """Initialize the decoder layer.
 
@@ -33,12 +37,18 @@ class DecoderLayer(nn.Module):
             d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=True
         )
 
+        # Output Projection Layer
+        self.output_proj = nn.Linear(d_model, d_model, bias=False)
+
         self.layer_norm1 = nn.LayerNorm(d_model)
 
         # Cross-Attention Layer
         self.cross_attention = MultiHeadAttention(
             d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=False
         )
+
+        # Output Projection Layer
+        self.output_proj2 = nn.Linear(d_model, d_model, bias=False)
 
         self.layer_norm2 = nn.LayerNorm(d_model)
 
@@ -61,19 +71,20 @@ class DecoderLayer(nn.Module):
         decoder_input: torch.Tensor,
         encoder_padding_mask: torch.Tensor,
         decoder_padding_mask: torch.Tensor,
-    ):
+    ) -> torch.Tensor:
         """Forward pass for the decoder layer.
 
-        Input shapes: batch_size, seq_len, d_dim
+        Input shapes: (batch_size, seq_len, d_model)
 
         Args:
-            encoder_output (torch.Tensor): Output tensor from the encoder layer.
+            encoder_output (torch.Tensor): Output tensor from the encoder stack.
             decoder_input (torch.Tensor): Input tensor to the decoder layer.
-            encoder_padding_mask (torch.Tensor): Padding mask for the encoder input (used in cross-attention).
+            encoder_padding_mask (torch.Tensor): Padding mask for the encoder input
+                (used in cross-attention).
             decoder_padding_mask (torch.Tensor): Padding mask for the decoder input.
 
         Returns:
-            torch.Tensor: Output tensor from the decoder layer.
+            torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # Projection Layers for decoder input for masked self-attention
         decoder_query = self.q_proj(decoder_input)
@@ -87,6 +98,9 @@ class DecoderLayer(nn.Module):
             value=decoder_value,
             attn_mask=decoder_padding_mask,
         )
+
+        # Output projection layer
+        masked_attention_output = self.output_proj(masked_attention_output)
 
         # Dropout, Residual, Layer Norm
         masked_attention_output = self.dropout(masked_attention_output)
@@ -104,6 +118,8 @@ class DecoderLayer(nn.Module):
             value=encoder_value,
             attn_mask=encoder_padding_mask,
         )
+        # Output projection layer
+        cross_attention_output = self.output_proj(cross_attention_output)
 
         # Dropout, Residual, Layer Norm
         cross_attention_output = self.dropout(cross_attention_output)
@@ -122,6 +138,8 @@ class DecoderLayer(nn.Module):
 
 
 class DecoderStack(nn.Module):
+    """A stack of Transformer decoder layers applied sequentially."""
+
     def __init__(
         self, d_model: int, d_ff: int, n_heads: int, n_layers: int, dropout: float = 0.0
     ):
@@ -145,19 +163,20 @@ class DecoderStack(nn.Module):
         decoder_input: torch.Tensor,
         encoder_padding_mask: torch.Tensor,
         decoder_padding_mask: torch.Tensor,
-    ):
+    ) -> torch.Tensor:
         """Forward pass for the decoder stack.
 
-        Input shapes: batch_size, seq_len, d_dim
+        Input shapes: (batch_size, seq_len, d_model)
 
         Args:
-            encoder_output (torch.Tensor): Output tensor from the encoder layer.
-            decoder_input (torch.Tensor): Input tensor to the decoder layer.
-            encoder_padding_mask (torch.Tensor): Padding mask for the encoder input (used in cross-attention).
+            encoder_output (torch.Tensor): Output tensor from the encoder stack.
+            decoder_input (torch.Tensor): Input tensor to the decoder stack.
+            encoder_padding_mask (torch.Tensor): Padding mask for the encoder input
+                (used in cross-attention).
             decoder_padding_mask (torch.Tensor): Padding mask for the decoder input.
 
         Returns:
-            torch.Tensor: Output tensor from the decoder layer.
+            torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         for layer in self.layers:
             decoder_input = layer(
