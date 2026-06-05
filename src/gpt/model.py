@@ -1,10 +1,15 @@
-import torch.nn as nn
-from src.utils.positional_encoder import PositionalEncoder
-from src.gpt.decoder import DecoderStack
+"""GPT-style (decoder-only) Transformer language model."""
+
 import torch
+import torch.nn as nn
+
+from src.gpt.decoder import DecoderStack
+from src.utils.positional_encoder import PositionalEncoder
 
 
 class DecoderOnlyTransformer(nn.Module):
+    """Decoder-only Transformer with tied input/output embeddings."""
+
     def __init__(
         self,
         vocab_size: int,
@@ -48,19 +53,25 @@ class DecoderOnlyTransformer(nn.Module):
         self.output_proj = nn.Linear(d_model, vocab_size, bias=False)
         self.output_proj.weight = self.embedding_layer.token_embedder.weight
 
-    def forward(self, input_ids, attention_mask):
+    def forward(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass for the decoder only transformer.
 
         Args:
-            input_ids (torch.Tensor): Input tensor to the decoder layer.
-            attention_mask (torch.Tensor): Padding mask for the decoder input.
+            input_ids (torch.Tensor): Token ids of shape (batch_size, seq_len).
+            attention_mask (torch.Tensor): Attention mask of shape
+                (batch_size, seq_len); 1 for real tokens, 0 for padding.
+
+        Returns:
+            torch.Tensor: Output logits of shape (batch_size, seq_len, vocab_size).
         """
         # Convert attention masks to padding masks and reshape to (B, 1, 1, K)
         # so they broadcast over (B, n_heads, Q, K) attention scores.
         padding_mask = (~attention_mask.bool()).unsqueeze(1).unsqueeze(2)
 
         # Embed the input tokens
-        input_embed = self.embedding_layer(input_ids)
+        input_embed = self.embedding_layer(input_ids, attention_mask)
 
         # Decode the input tokens
         decoder_output = self.decoder(

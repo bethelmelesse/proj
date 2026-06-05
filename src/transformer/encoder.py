@@ -2,10 +2,13 @@
 
 import torch
 import torch.nn as nn
+
 from src.attention_utils.multihead_attention import MultiHeadAttention
 
 
 class EncoderLayer(nn.Module):
+    """A single Transformer encoder block (self-attention + feed-forward)."""
+
     def __init__(self, d_model: int, d_ff: int, n_heads: int, dropout: float = 0.0):
         """Initialize the encoder layer.
 
@@ -26,6 +29,9 @@ class EncoderLayer(nn.Module):
             d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=False
         )
 
+        # Output Projection Layer
+        self.output_proj = nn.Linear(d_model, d_model, bias=False)
+
         self.layer_norm1 = nn.LayerNorm(d_model)
 
         # Feed Forward Layer
@@ -41,17 +47,19 @@ class EncoderLayer(nn.Module):
         # Dropout Layer
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, encoder_input, encoder_padding_mask):
+    def forward(
+        self, encoder_input: torch.Tensor, encoder_padding_mask: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass for the encoder layer.
 
-        Input shapes: batch_size, seq_len, d_dim
+        Input shapes: (batch_size, seq_len, d_model)
 
         Args:
             encoder_input (torch.Tensor): Input tensor to the encoder layer.
             encoder_padding_mask (torch.Tensor): Padding mask for the encoder input.
 
         Returns:
-            torch.Tensor: Output tensor from the encoder layer.
+            torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # Projection Layers
         query = self.q_proj(encoder_input)
@@ -62,6 +70,9 @@ class EncoderLayer(nn.Module):
         attention_output = self.self_attention(
             query, key, value, attn_mask=encoder_padding_mask
         )
+
+        # Output projection layer
+        attention_output = self.output_proj(attention_output)
 
         # Dropout, Residual, Layer Norm
         attention_output = self.dropout(attention_output)
@@ -78,6 +89,8 @@ class EncoderLayer(nn.Module):
 
 
 class EncoderStack(nn.Module):
+    """A stack of Transformer encoder layers applied sequentially."""
+
     def __init__(
         self, d_model: int, d_ff: int, n_heads: int, n_layers: int, dropout: float = 0.0
     ):
@@ -95,17 +108,19 @@ class EncoderStack(nn.Module):
             [EncoderLayer(d_model, d_ff, n_heads, dropout) for _ in range(n_layers)]
         )
 
-    def forward(self, encoder_input, encoder_padding_mask):
+    def forward(
+        self, encoder_input: torch.Tensor, encoder_padding_mask: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass for the encoder stack.
 
-        Input shapes: batch_size, seq_len, d_dim
+        Input shapes: (batch_size, seq_len, d_model)
 
         Args:
-            encoder_input (torch.Tensor): Input tensor to the encoder layer.
+            encoder_input (torch.Tensor): Input tensor to the encoder stack.
             encoder_padding_mask (torch.Tensor): Padding mask for the encoder input.
 
         Returns:
-            torch.Tensor: Output tensor from the encoder layer.
+            torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         for layer in self.layers:
             encoder_input = layer(encoder_input, encoder_padding_mask)

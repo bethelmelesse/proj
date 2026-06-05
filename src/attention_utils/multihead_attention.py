@@ -1,3 +1,5 @@
+"""Multi-head Attention."""
+
 from __future__ import annotations
 
 import torch
@@ -9,6 +11,8 @@ from src.attention_utils.scaled_dot_product_attention import (
 
 
 class MultiHeadAttention(nn.Module):
+    """Mulit-head Attention."""
+
     def __init__(
         self, d_model: int, n_heads: int, dropout: float = 0.0, is_causal: bool = False
     ):
@@ -19,7 +23,8 @@ class MultiHeadAttention(nn.Module):
             n_heads (int, optional): The number of attention heads.
             dropout (float, optional): The dropout rate. Defaults to 0.0.
             is_causal (bool, optional): Check if the attention is causal.
-                This is used to mask future tokens in the sequence for decoder. Defaults to False.
+                This is used to mask future tokens in the sequence for decoder.
+                Defaults to False.
         """
         super().__init__()
         assert d_model % n_heads == 0, (
@@ -33,11 +38,14 @@ class MultiHeadAttention(nn.Module):
 
         self.head_dim = d_model // n_heads
 
-        # Output Projection Layer
-        self.output_proj = nn.Linear(d_model, d_model, bias=False)
-
-    def forward(self, query, key, value, attn_mask: torch.Tensor | None = None):
-        """Scaled Dot Product Attention.
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Multi-head Attention Forward pass.
 
         Shape of query, key, value: (batch_size, seq_len, d_dim)
             batch_size: number of samples in the batch
@@ -87,9 +95,6 @@ class MultiHeadAttention(nn.Module):
             .view(batch_size, q_len, self.d_model)
         )
 
-        # Output projection layer
-        attention_output = self.output_proj(attention_output)
-
         return attention_output
 
 
@@ -99,12 +104,9 @@ if __name__ == "__main__":
     key = torch.randn(batch_size, seq_len, d_dim)
     value = torch.randn(batch_size, seq_len, d_dim)
 
-    is_causal = True
-    attn_mask = None
-
     multihead_attention = MultiHeadAttention(
-        d_model=d_dim, n_heads=1, dropout=0.0, is_causal=is_causal
+        d_model=d_dim, n_heads=1, dropout=0.0, is_causal=True
     )
-    attention_output = multihead_attention(query, key, value, attn_mask)
+    attention_output = multihead_attention(query, key, value, attn_mask=None)
     print(attention_output)
     print(attention_output.shape)

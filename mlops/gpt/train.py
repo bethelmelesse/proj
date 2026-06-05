@@ -1,26 +1,25 @@
-import copy
-import os
-from typing import Literal, Any
+"""End-to-end training pipeline for the decoder-only (GPT) transformer."""
 
-import mlflow
+from typing import Any
+
 import torch
 from datasets import Dataset, DatasetDict
-from torch import optim, nn
+from torch import nn, optim
+from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
+from mlops.gpt.train_args import cli_args_parser
+from mlops.gpt.trainer import Trainer
 from src.gpt_with_kv_caching.model import DecoderOnlyTransformer
 from src.utils.utils import print_header
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
-from torch.optim.lr_scheduler import ExponentialLR
-from mlops.utils.train_utils import compute_grad_norm
 
 
-def load_dataset(data_args: dict[str, Any], seed: int = 42) -> DatasetDict:
+def load_dataset(dataset_path: str, seed: int = 42) -> DatasetDict:
     """Load a line-delimited text file and split 70/20/10 into train/valid/test."""
     print_header(text="Loading and splitting dataset (Train/Valid/Test)")
-    print(f"Source: {data_args['dataset_path']}")
-    with open(data_args["dataset_path"], "r") as f:
+    print(f"Source: {dataset_path}")
+    with open(dataset_path, "r") as f:
         text = f.read().splitlines()
 
     dataset = Dataset.from_list([{"text": sentence} for sentence in text])
@@ -208,284 +207,59 @@ def initialize_criterion(
     return criterion
 
 
-def train_epoch(
-    epoch: int,
-    loader: DataLoader,
-    model: nn.Module,
-    optimizer: optim.Optimizer | None,
-    criterion: nn.Module,
-    device: str,
-    global_step: int | None,
-    mode: Literal["Train", "Val", "Init", "Test"],
-) -> tuple[float, int | None]:
-    """Run one pass over `loader` in the given mode.
-
-    Backward + optimizer step happen only when mode == "Train".
-    Step-level metrics are logged for "Train" and "Val"; "Init" and
-    "Test" log only the epoch-level loss. `global_step` advances only
-    in "Train" mode.
-
-    Args:
-        optimizer:   Required when mode=="Train"; pass None otherwise.
-        global_step: Training-step counter. Pass None for "Init"/"Test".
-
-    Returns:
-        `(avg_epoch_loss, updated_global_step)`. The counter is returned
-        unchanged for non-"Train" modes.
-    """
-    model.train() if mode == "Train" else model.eval()
-
-    epoch_loss = 0.0
-    num_batches = 0
-
-    for batch in tqdm(loader, desc=f"Epoch {epoch} [{mode}]"):
-        if mode == "Train":
-            optimizer.zero_grad()
-
-        logits = model(
-            input_ids=batch["input_ids"].to(device),
-            attention_mask=batch["attention_mask"].to(device),
-        )
-        labels = batch["labels"].to(device)
-
-        # Drop the last logit (no next-token target) so logits[:, t] is
-        # paired with the token at position t+1, which `labels` already holds.
-        logits_shifted = logits[:, :-1, :]
-        batch_size, seq_len, vocab_size = logits_shifted.shape
-        logits_shifted = logits_shifted.reshape(batch_size * seq_len, vocab_size)
-        labels = labels.reshape(batch_size * seq_len)
-
-        loss = criterion(logits_shifted, labels)
-        epoch_loss += loss.item()
-
-        if mode == "Train":
-            loss.backward()
-            grad_norm = nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=float("inf")
-            )
-            grad_norm2 = compute_grad_norm(model=model)
-            optimizer.step()
-
-        # Step-level logging: per-batch loss for Train/Val; LR + step
-        # increment only for Train so the x-axis tracks gradient updates.
-        if mode in ("Train", "Val"):
-            mlflow.log_metrics(
-                {f"step_level/{mode}_loss": loss.item()}, step=global_step
-            )
-        if mode == "Train":
-            current_lr = optimizer.param_groups[0]["lr"]
-            mlflow.log_metrics(
-                {"step_level/lr": current_lr, "step_level/grad_norm": grad_norm},
-                step=global_step,
-            )
-            global_step += 1
-
-        num_batches += 1
-
-    avg_epoch_loss = epoch_loss / num_batches
-
-    print(f"{mode} Loss: {avg_epoch_loss:.4f}")
-    mlflow.log_metrics({f"epoch_level/{mode}_loss": avg_epoch_loss}, step=epoch)
-    return avg_epoch_loss, global_step
-
-
-def train(
-    data_args: dict,
-    tokenizer_args: dict,
-    dataloader_args: dict,
-    model_args: dict,
-    optim_args: dict,
-    criterion_args: dict,
-    scheduler_args: dict,
-    training_args: dict,
-    mlflow_args: dict,
-) -> None:
+def train(args) -> None:
     """End-to-end training entry point."""
-    dataset_dict = load_dataset(data_args=data_args)
+    # Load dataset
+    dataset_dict = load_dataset(dataset_path=args["data_args"]["dataset_path"])
 
+    # Tokenize dataset
     train_set, valid_set, test_set, tokenizer = tokenize_dataset(
-        dataset_dict=dataset_dict, tokenizer_args=tokenizer_args
+        dataset_dict=dataset_dict, tokenizer_args=args["tokenizer_args"]
     )
+    # build dataloader
     train_loader, valid_loader, test_loader = create_dataloader(
         train_set=train_set,
         valid_set=valid_set,
         test_set=test_set,
-        batch_size=dataloader_args["batch_size"],
+        batch_size=args["dataloader_args"]["batch_size"],
     )
 
-    model = build_model(tokenizer=tokenizer, model_args=model_args)
-    optimizer = initialize_optimizer(model=model, optim_args=optim_args)
-    criterion = initialize_criterion(tokenizer=tokenizer, criterion_args=criterion_args)
+    # Build model, optimizer and criterion
+    model = build_model(tokenizer=tokenizer, model_args=args["model_args"])
+    optimizer = initialize_optimizer(model=model, optim_args=args["optim_args"])
+    criterion = initialize_criterion(
+        tokenizer=tokenizer, criterion_args=args["criterion_args"]
+    )
 
     print_header(text="Initial Scheduler")
-    scheduler = ExponentialLR(optimizer, gamma=scheduler_args["gamma"])
+    scheduler = ExponentialLR(optimizer, gamma=args["scheduler_args"]["gamma"])
 
-    epochs = training_args["epochs"]
-    device = training_args["device"]
-    checkpoint_dir = training_args["checkpoint_dir"]
+    device = args["training_args"]["device"]
     model.to(device)
 
-    if checkpoint_dir:
-        os.makedirs(checkpoint_dir, exist_ok=True)
+    # Keys here must match what Trainer.__init__ reads (note: "val_loader").
+    trainer_args = {
+        "train_loader": train_loader,
+        "val_loader": valid_loader,
+        "test_loader": test_loader,
+        "model": model,
+        "optimizer": optimizer,
+        "criterion": criterion,
+        "scheduler": scheduler,
+        "batch_size": args["dataloader_args"]["batch_size"],
+        **args["training_args"],
+        **args["dataloader_args"],
+        **args["optim_args"],
+        **args["mlflow_args"],
+    }
 
-    # Training with MLflow logging
-    print_header(text="Setting up mlflow")
-    mlflow.set_tracking_uri(mlflow_args["tracker_url"])
-    mlflow.set_experiment(mlflow_args["experiment_name"])
-    with mlflow.start_run(run_name=mlflow_args["run_name"]):
-        # Enable system metrics logging
-        mlflow.enable_system_metrics_logging()
-        mlflow.log_params(
-            {
-                "epochs": training_args["epochs"],
-                "batch_size": dataloader_args["batch_size"],
-                "lr": optim_args["lr"],
-            }
-        )
-
-        best_state = copy.deepcopy(model.state_dict())
-        best_val_loss = float("inf")
-        best_epoch = 0
-        epoch_one_loss = None
-        global_step = 0
-
-        # Initial Validation
-        print_header(text="Initial Validation")
-        with torch.no_grad():
-            init_loss, _ = train_epoch(
-                epoch=0,
-                loader=valid_loader,
-                model=model,
-                criterion=criterion,
-                device=device,
-                mode="Init",
-                global_step=None,
-                optimizer=None,
-            )
-
-        print_header(text="Started Training")
-        for epoch in range(1, epochs + 1):
-            # Training
-            train_loss, global_step = train_epoch(
-                epoch=epoch,
-                loader=train_loader,
-                model=model,
-                optimizer=optimizer,
-                criterion=criterion,
-                device=device,
-                global_step=global_step,
-                mode="Train",
-            )
-            if epoch == 1:
-                epoch_one_loss = train_loss
-
-            # Validation
-            with torch.no_grad():
-                val_loss, _ = train_epoch(
-                    epoch=epoch,
-                    loader=valid_loader,
-                    model=model,
-                    criterion=criterion,
-                    device=device,
-                    mode="Val",
-                    global_step=global_step,
-                    optimizer=None,
-                )
-
-            scheduler.step()
-
-            if val_loss <= best_val_loss:
-                best_state = copy.deepcopy(model.state_dict())
-                best_epoch = epoch
-                best_val_loss = val_loss
-
-                if checkpoint_dir:
-                    ckpt_path = os.path.join(checkpoint_dir, "best.pt")
-                    torch.save(
-                        {
-                            "epoch": best_epoch,
-                            "model_state_dict": best_state,
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "val_loss": best_val_loss,
-                        },
-                        ckpt_path,
-                    )
-                    print(f"Saved best checkpoint to {ckpt_path}")
-                    mlflow.log_artifact(ckpt_path, artifact_path="checkpoints")
-
-        print(
-            f"\nInitial Loss [epoch 0]={init_loss:.4f}"
-            f"\nLoss [epoch 1]={epoch_one_loss}"
-            f"\nFinal Loss [epoch {epoch}]={val_loss:.4f}"
-            f"\nBest Loss [epoch {best_epoch}]={best_val_loss:.4f}"
-        )
-
-        # Final test — restore the best validation checkpoint first.
-        model.load_state_dict(best_state)
-        print_header(text="Final Validation")
-        with torch.no_grad():
-            test_loss, _ = train_epoch(
-                epoch=best_epoch,
-                loader=test_loader,
-                model=model,
-                criterion=criterion,
-                device=device,
-                mode="Test",
-                global_step=None,
-                optimizer=None,
-            )
+    trainer = Trainer(trainer_args)
+    trainer.train()
 
 
 if __name__ == "__main__":
-    data_args = {"dataset_path": "data/dataset.txt"}
-    tokenizer_args = {
-        "tokenizer_path": "t5-small",
-        "batch_size": 100,
-        "padding": "max_length",
-        "max_length": 128,
-    }
-    dataloader_args = {"batch_size": 2}
-    model_args = {
-        "d_model": 512,
-        "d_ff": 2048,
-        "n_heads": 2,
-        "n_layers": 6,
-        "max_seq_len": 128,
-        "dropout": 0.0,
-    }  # DecoderOnlyTransformer Model
-    optim_args = {
-        "lr": 1e-4,
-        "betas": (0.9, 0.98),
-        "eps": 1e-9,
-        "weight_decay": 0.0,
-    }  # AdamW
-    # betas=(0.9, 0.98) and eps=1e-9 are from "Attention Is All You Need".
-    # weight_decay=0 keeps AdamW equivalent to paper-Adam; raise to 0.01 to
-    # match common modern practice.
+    args = cli_args_parser()
 
-    criterion_args = {"label_smoothing": 0.1}
-
-    exp_scheduler_args = {"gamma": 0.9}
-    scheduler_args = {**exp_scheduler_args}
-
-    training_args = {"epochs": 10, "device": "cpu", "checkpoint_dir": None}
-
-    mlflow_args = {
-        "experiment_name": "GPT (Decoder Only)",
-        "run_name": "test: grad norm",
-        "tracker_url": "http://localhost:5000",
-    }
-
-    train(
-        data_args=data_args,
-        tokenizer_args=tokenizer_args,
-        dataloader_args=dataloader_args,
-        model_args=model_args,
-        optim_args=optim_args,
-        criterion_args=criterion_args,
-        scheduler_args=scheduler_args,
-        training_args=training_args,
-        mlflow_args=mlflow_args,
-    )
+    train(args)
 
     print()

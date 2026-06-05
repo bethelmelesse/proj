@@ -1,11 +1,16 @@
-import torch.nn as nn
-from src.transformer.encoder import EncoderStack
-from src.transformer.decoder import DecoderStack
-from src.utils.positional_encoder import PositionalEncoder
+"""Encoder-decoder Transformer model (Vaswani et al., 2017)."""
+
 import torch
+import torch.nn as nn
+
+from src.transformer.decoder import DecoderStack
+from src.transformer.encoder import EncoderStack
+from src.utils.positional_encoder import PositionalEncoder
 
 
 class EncoderDecoderTransformer(nn.Module):
+    """Encoder-decoder Transformer with tied input/output embeddings."""
+
     def __init__(
         self,
         vocab_size: int,
@@ -43,18 +48,26 @@ class EncoderDecoderTransformer(nn.Module):
 
     def forward(
         self,
-        source_tokens,
-        target_tokens,
-        source_attention_mask=None,
-        target_attention_mask=None,
-    ):
+        source_tokens: torch.Tensor,
+        target_tokens: torch.Tensor,
+        source_attention_mask: torch.Tensor | None = None,
+        target_attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Forward pass for the encoder decoder transformer.
 
         Args:
-            source_tokens (torch.Tensor): Input tensor to the encoder layer.
-            target_tokens (torch.Tensor): Input tensor to the decoder layer.
-            source_attention_mask (torch.Tensor): Padding mask for the encoder input.
-            target_attention_mask (torch.Tensor): Padding mask for the decoder input.
+            source_tokens (torch.Tensor): Encoder token ids of shape
+                (batch_size, source_seq_len).
+            target_tokens (torch.Tensor): Decoder token ids of shape
+                (batch_size, target_seq_len).
+            source_attention_mask (torch.Tensor, optional): Attention mask for the
+                encoder input; 1 for real tokens, 0 for padding. Defaults to None.
+            target_attention_mask (torch.Tensor, optional): Attention mask for the
+                decoder input; 1 for real tokens, 0 for padding. Defaults to None.
+
+        Returns:
+            torch.Tensor: Output logits of shape
+                (batch_size, target_seq_len, vocab_size).
         """
         # Convert attention masks to padding masks and reshape to (B, 1, 1, K)
         # so they broadcast over (B, n_heads, Q, K) attention scores.
@@ -76,8 +89,8 @@ class EncoderDecoderTransformer(nn.Module):
             target_tokens[target_tokens == -100] = 0
 
         # Embed the source and target tokens
-        source_embed = self.embedding_layer(source_tokens)
-        target_embed = self.embedding_layer(target_tokens)
+        source_embed = self.embedding_layer(source_tokens, source_attention_mask)
+        target_embed = self.embedding_layer(target_tokens, target_attention_mask)
 
         # Encode the source tokens
         encoder_output = self.encoder(
@@ -121,33 +134,38 @@ if __name__ == "__main__":
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Params: {total:,} total ({trainable:,} trainable)")
 
-    # Base Transformer (Vaswani 2017): sinusoidal pos encoding, tied embeddings, no LM-head bias.
+    # Base Transformer (Vaswani 2017): sinusoidal pos encoding, tied embeddings, no
+    # LM-head bias.
     original_transformer_param_count = 63_045_632
     if trainable != original_transformer_param_count:
         diff = trainable - original_transformer_param_count
         print(
-            f"Mismatch: actual {trainable:,} vs expected {original_transformer_param_count:,} "
+            f"Mismatch: actual {trainable:,} vs expected "
+            f"{original_transformer_param_count:,} "
             f"(diff {diff:+,})"
         )
 
         # Expected per-module counts for the original paper config.
         # Embedding: token table only (sinusoidal pos = 0 params, output proj tied = 0).
         expected_embedding = vocab_size * d_model
-        # Per encoder layer: 4 attn projections (Q/K/V/O, no bias) + 2 LayerNorms + FFN(with bias).
+        # Per encoder layer: 4 attn projections (Q/K/V/O, no bias) + 2 LayerNorms + FFN
+        # (with bias).
         expected_encoder_layer = (
             4 * d_model * d_model
             + 2 * (2 * d_model)
             + (d_model * d_ff + d_ff)
             + (d_ff * d_model + d_model)
         )
-        # Per decoder layer: 8 attn projections (self Q/K/V/O + cross Q/K/V/O) + 3 LayerNorms + FFN.
+        # Per decoder layer: 8 attn projections (self Q/K/V/O + cross Q/K/V/O) + 3
+        # LayerNorms + FFN.
         expected_decoder_layer = (
             8 * d_model * d_model
             + 3 * (2 * d_model)
             + (d_model * d_ff + d_ff)
             + (d_ff * d_model + d_model)
         )
-        # All encoder layers are identical, same for decoder layers — compare just one of each.
+        # All encoder layers are identical, same for decoder layers — compare just one
+        # of each.
         expected = {
             "embedding_layer": expected_embedding,
             "encoder.layers.0": expected_encoder_layer,

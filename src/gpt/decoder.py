@@ -1,9 +1,14 @@
-import torch.nn as nn
-from src.attention_utils.multihead_attention import MultiHeadAttention
+"""GPT-style (decoder-only) Transformer decoder layer and stack."""
+
 import torch
+import torch.nn as nn
+
+from src.attention_utils.multihead_attention import MultiHeadAttention
 
 
 class DecoderLayer(nn.Module):
+    """A single GPT-style decoder block (causal self-attention + feed-forward)."""
+
     def __init__(self, d_model: int, d_ff: int, n_heads: int, dropout: float = 0.0):
         """Initialize the decoder layer.
 
@@ -27,6 +32,9 @@ class DecoderLayer(nn.Module):
             d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=True
         )
 
+        # Output Projection Layer
+        self.output_proj = nn.Linear(d_model, d_model, bias=False)
+
         self.layer_norm2 = nn.LayerNorm(d_model)
 
         # Feed Forward Layer
@@ -39,12 +47,19 @@ class DecoderLayer(nn.Module):
         # Dropout Layer
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, decoder_input: torch.Tensor, decoder_padding_mask: torch.Tensor):
+    def forward(
+        self, decoder_input: torch.Tensor, decoder_padding_mask: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass for the decoder layer.
+
+        Input shapes: (batch_size, seq_len, d_model)
 
         Args:
             decoder_input (torch.Tensor): Input tensor to the decoder layer.
             decoder_padding_mask (torch.Tensor): Padding mask for the decoder input.
+
+        Returns:
+            torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # Projection Layers for decoder input
         decoder_query = self.q_proj(decoder_input)
@@ -58,6 +73,9 @@ class DecoderLayer(nn.Module):
             value=decoder_value,
             attn_mask=decoder_padding_mask,
         )
+
+        # Output projection layer
+        attention_output = self.output_proj(attention_output)
 
         # Dropout, Residual, Layer Norm
         attention_output = self.dropout(attention_output)
@@ -74,6 +92,8 @@ class DecoderLayer(nn.Module):
 
 
 class DecoderStack(nn.Module):
+    """A stack of GPT-style decoder layers applied sequentially."""
+
     def __init__(
         self, d_model: int, d_ff: int, n_heads: int, n_layers: int, dropout: float = 0.0
     ):
@@ -91,17 +111,19 @@ class DecoderStack(nn.Module):
             [DecoderLayer(d_model, d_ff, n_heads, dropout) for _ in range(n_layers)]
         )
 
-    def forward(self, decoder_input: torch.Tensor, decoder_padding_mask: torch.Tensor):
+    def forward(
+        self, decoder_input: torch.Tensor, decoder_padding_mask: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass for the decoder stack.
 
-        Input shapes: batch_size, seq_len, d_dim
+        Input shapes: (batch_size, seq_len, d_model)
 
         Args:
-            decoder_input (torch.Tensor): Input tensor to the decoder layer.
+            decoder_input (torch.Tensor): Input tensor to the decoder stack.
             decoder_padding_mask (torch.Tensor): Padding mask for the decoder input.
 
         Returns:
-            torch.Tensor: Output tensor from the decoder layer.
+            torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         for layer in self.layers:
             decoder_input = layer(
@@ -114,13 +136,12 @@ class DecoderStack(nn.Module):
 if __name__ == "__main__":
     batch_size, seq_len, d_dim = 1, 3, 5
     decoder_input = torch.randn(batch_size, seq_len, d_dim)
-    decoder_padding_mask = None
 
     decoder_stack = DecoderStack(
         d_model=d_dim, d_ff=d_dim, n_heads=1, n_layers=1, dropout=0.0
     )
     decoder_output = decoder_stack(
-        decoder_input=decoder_input, decoder_padding_mask=decoder_padding_mask
+        decoder_input=decoder_input, decoder_padding_mask=None
     )
     print(decoder_output)
     print(decoder_output.shape)

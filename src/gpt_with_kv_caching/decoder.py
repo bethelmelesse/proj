@@ -1,9 +1,14 @@
-import torch.nn as nn
-from src.attention_utils.multihead_attention import MultiHeadAttention
+"""GPT-style (decoder-only) Transformer decoder with key-value caching."""
+
 import torch
+import torch.nn as nn
+
+from src.attention_utils.multihead_attention import MultiHeadAttention
 
 
 class DecoderLayer(nn.Module):
+    """A single GPT-style decoder block with optional key-value caching."""
+
     def __init__(
         self,
         d_model: int,
@@ -19,6 +24,8 @@ class DecoderLayer(nn.Module):
             d_ff (int): Dimension of the feed forward layer.
             n_heads (int): Number of attention heads.
             dropout (float, optional): Dropout rate. Defaults to 0.0.
+            use_kv_cache (bool, optional): Whether to return the updated
+                key/value cache from the forward pass. Defaults to False.
         """
         super().__init__()
 
@@ -33,6 +40,9 @@ class DecoderLayer(nn.Module):
         self.masked_self_attention = MultiHeadAttention(
             d_model=d_model, n_heads=n_heads, dropout=dropout, is_causal=True
         )
+
+        # Output Projection Layer
+        self.output_proj = nn.Linear(d_model, d_model, bias=False)
 
         self.layer_norm2 = nn.LayerNorm(d_model)
 
@@ -53,12 +63,22 @@ class DecoderLayer(nn.Module):
         decoder_input: torch.Tensor,
         decoder_padding_mask: torch.Tensor,
         kv_cache: tuple[torch.Tensor, torch.Tensor] = None,
-    ):
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         """Forward pass for the decoder layer.
+
+        Input shapes: (batch_size, seq_len, d_model)
 
         Args:
             decoder_input (torch.Tensor): Input tensor to the decoder layer.
             decoder_padding_mask (torch.Tensor): Padding mask for the decoder input.
+            kv_cache (tuple[torch.Tensor, torch.Tensor], optional): Cached
+                (key, value) tensors from previous steps, concatenated with the
+                current step's key/value. Defaults to None.
+
+        Returns:
+            tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+                The output tensor of shape (batch_size, seq_len, d_model) and the
+                updated (key, value) cache (None when ``use_kv_cache`` is False).
         """
         # Projection Layers for decoder input
         decoder_query = self.q_proj(decoder_input)
@@ -81,6 +101,9 @@ class DecoderLayer(nn.Module):
             attn_mask=decoder_padding_mask,
         )
 
+        # Output projection layer
+        attention_output = self.output_proj(attention_output)
+
         # Dropout, Residual, Layer Norm
         attention_output = self.dropout(attention_output)
         attention_output = self.layer_norm1((attention_output + decoder_input))
@@ -96,6 +119,8 @@ class DecoderLayer(nn.Module):
 
 
 class DecoderStack(nn.Module):
+    """A stack of GPT-style decoder layers with optional key-value caching."""
+
     def __init__(
         self,
         d_model: int,
@@ -113,6 +138,8 @@ class DecoderStack(nn.Module):
             n_heads (int): Number of attention heads.
             n_layers (int): Number of decoder layers.
             dropout (float, optional): Dropout rate. Defaults to 0.0.
+            use_kv_cache (bool, optional): Whether to maintain and return a
+                per-layer key/value cache. Defaults to False.
         """
         super().__init__()
         self.layers = nn.ModuleList(
@@ -127,18 +154,23 @@ class DecoderStack(nn.Module):
         self,
         decoder_input: torch.Tensor,
         decoder_padding_mask: torch.Tensor,
-        kv_cache=None,
-    ):
+        kv_cache: dict[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, dict | None]:
         """Forward pass for the decoder stack.
 
-        Input shapes: batch_size, seq_len, d_dim
+        Input shapes: (batch_size, seq_len, d_model)
 
         Args:
-            decoder_input (torch.Tensor): Input tensor to the decoder layer.
+            decoder_input (torch.Tensor): Input tensor to the decoder stack.
             decoder_padding_mask (torch.Tensor): Padding mask for the decoder input.
+            kv_cache (dict[int, tuple[torch.Tensor, torch.Tensor]], optional):
+                Mapping of layer index to its cached (key, value) tensors.
+                Defaults to None.
 
         Returns:
-            torch.Tensor: Output tensor from the decoder layer.
+            tuple[torch.Tensor, dict | None]: The output tensor of shape
+                (batch_size, seq_len, d_model) and the updated per-layer
+                key/value cache (None when ``use_kv_cache`` is False).
         """
         if self.use_kv_cache:
             kv_cache = kv_cache if kv_cache else {}

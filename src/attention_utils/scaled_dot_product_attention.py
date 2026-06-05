@@ -1,6 +1,9 @@
+"""Scaled-dot product attention."""
+
+import math
+
 import torch
 import torch.nn.functional as F
-import math
 
 
 def scaled_dot_product_attention(
@@ -8,9 +11,9 @@ def scaled_dot_product_attention(
     key: torch.Tensor,
     value: torch.Tensor,
     is_causal: bool = False,
-    attn_mask=None,
+    attn_mask: torch.Tensor = None,
     dropout: float = 0.0,
-):
+) -> torch.Tensor:
     """Scaled Dot Product Attention.
 
     Shape of query, key, value: (batch_size, n_heads, seq_len, d_dim)
@@ -27,6 +30,8 @@ def scaled_dot_product_attention(
             This is used to mask future tokens in the sequence for decoder.
         attn_mask (torch.Tensor, optional): Attention mask tensor. Defaults to None.
             This is used to mask the padding tokens in the sequence.
+        dropout (float, optional): Dropout probability applied to the attention
+            weights after softmax. Defaults to 0.0 (no dropout).
 
     Returns:
         torch.Tensor: Attention output tensor.
@@ -57,6 +62,11 @@ def scaled_dot_product_attention(
     # Softmax
     attention_weights = F.softmax(scaled_score, dim=-1)
 
+    # A fully-masked query row (e.g. a left-pad position that can only attend to
+    # padding) softmaxes to all-NaN. Zero those weights so the NaN doesn't
+    # propagate into real positions through the value sum in later layers.
+    attention_weights = torch.nan_to_num(attention_weights, nan=0.0)
+
     # Dropout
     attention_weights = F.dropout(attention_weights, p=dropout)
 
@@ -72,11 +82,8 @@ if __name__ == "__main__":
     key = torch.randn(batch_size, n_heads, seq_len, d_dim)
     value = torch.randn(batch_size, n_heads, seq_len, d_dim)
 
-    is_causal = True
-    attn_mask = None
-
     attention_output = scaled_dot_product_attention(
-        query, key, value, is_causal, attn_mask
+        query, key, value, is_causal=True, attn_mask=None
     )
     print(attention_output)
     print(attention_output.shape)
