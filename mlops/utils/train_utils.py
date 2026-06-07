@@ -31,13 +31,13 @@ def adamw_optimizer(
 
 
 def cosine_annealing_lr_scheduler(
-    optimizer: optim.Optimizer, epochs: int, eta_min: float
+    optimizer: optim.Optimizer, steps: int, eta_min: float
 ) -> CosineAnnealingLR:
     """Build a CosineAnnealingLR that decays `lr` from its initial value to
-    `eta_min` over `epochs` scheduler steps (one per epoch in the trainer)."""
+    `eta_min` over `steps` scheduler ticks (one per optimizer step in the trainer)."""
     print_header(text="Initializing Scheduler - CosineAnnealingLR")
-    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=eta_min)
-    print(f"Set CosineAnnealingLR: Tmax value: {epochs}, eta_min: {eta_min}")
+    scheduler = CosineAnnealingLR(optimizer, T_max=steps, eta_min=eta_min)
+    print(f"Set CosineAnnealingLR: Tmax value: {steps}, eta_min: {eta_min}")
 
     return scheduler
 

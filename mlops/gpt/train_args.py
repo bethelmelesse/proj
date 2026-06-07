@@ -55,7 +55,9 @@ def cli_args_parser() -> dict[str, dict[str, Any]]:
     scheduler.add_argument("--eta-min", type=float, default=0.0)
     # training args
     training = parser.add_argument_group("training")
-    training.add_argument("--epochs", type=int, default=10)
+    training.add_argument("--total_steps", type=int, default=100)
+    training.add_argument("--eval_every_n_steps", type=int, default=10)
+    training.add_argument("--log_every_n_steps", type=int, default=10)
     training.add_argument("--device", type=str, default="cpu")
     training.add_argument("--checkpoint-dir", type=str, default=None)
     # mlflow args
@@ -92,7 +94,9 @@ def cli_args_parser() -> dict[str, dict[str, Any]]:
         "criterion_args": {"label_smoothing": parsed.label_smoothing},
         "scheduler_args": {"eta_min": parsed.eta_min},
         "training_args": {
-            "epochs": parsed.epochs,
+            "total_steps": parsed.total_steps,
+            "eval_every_n_steps": parsed.eval_every_n_steps,
+            "log_every_n_steps": parsed.log_every_n_steps,
             "device": parsed.device,
             "checkpoint_dir": parsed.checkpoint_dir,
         },

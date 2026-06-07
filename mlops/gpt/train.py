@@ -206,7 +206,7 @@ def train(args) -> None:
     # Build Scheduler
     scheduler = cosine_annealing_lr_scheduler(
         optimizer=optimizer,
-        epochs=args["training_args"]["epochs"],
+        steps=args["training_args"]["total_steps"],
         eta_min=args["scheduler_args"]["eta_min"],
     )
     # Build criterion
